@@ -280,6 +280,7 @@ Se nenhuma API deprecated for encontrada, escreva no relatório: `Deprecated API
 **Sinais de detecção**
 - `print(` / `console.log(` em código de aplicação para registrar eventos e erros (grep: `\bprint\(` — sem o `\b` o padrão casa com `Blueprint(`).
 - Mensagens de log com dados pessoais (e-mail no login) — sobe para AP-06 se houver segredo.
+- **Não é finding**: `print` em scripts de linha de comando (seed, migrations, CLIs), onde a saída no terminal é a interface do script.
 
 **Correção**: Playbook **P-19** (logger da stack: `logging` / `console` encapsulado com níveis).
 

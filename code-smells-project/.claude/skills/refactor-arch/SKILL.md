@@ -111,6 +111,8 @@ Objetivo: reestruturar o projeto para o MVC alvo, corrigindo os findings, e prov
    - **Projeto monolítico** (poucos arquivos misturando tudo): crie a estrutura completa.
    - **Projeto parcialmente organizado** (já tem `models/`, `routes/`, `services/`...): **reaproveite** o que já está correto, mova o que está na camada errada, extraia controllers das rotas gordas e complete as camadas faltantes (config, middlewares de erro, composition root). Não reescreva do zero o que já funciona.
 3. Monte um plano mapeando **cada finding → padrão do playbook → arquivos afetados**. Imprima o plano em poucas linhas antes de editar.
+4. **Capture o baseline antes de editar qualquer arquivo**: suba a aplicação original (rodando seed, se houver), faça uma requisição para cada rota do inventário (caso de sucesso + um caso de erro) e guarde status e corpo completos em um diretório temporário fora do projeto. Encerre o processo e apague os artefatos gerados (bancos locais). Esse baseline é a referência da validação 3.3.
+5. **Endpoints administrativos/destrutivos sem autenticação (AP-04)**: proteja com token vindo da config (`ADMIN_TOKEN` + header `X-Admin-Token`), comparação em tempo constante e **fail-closed** (sem token configurado, a rota responde 403). Execução de SQL arbitrário deve ficar restrita a uma única consulta somente leitura. Registre como mudança de contrato e atualize exemplos de requisição (`api.http`, README).
 
 ### 3.2 Execução (ordem recomendada)
 1. **Config**: extraia segredos e parâmetros para o módulo de configuração lido de variáveis de ambiente (crie `.env.example` sem valores reais).
@@ -129,10 +131,10 @@ Regras durante a execução:
 ### 3.3 Validação (obrigatória)
 Execute de verdade — não declare sucesso sem evidência:
 1. **Instalação/compilação**: garanta que as dependências estão instaladas (use o ambiente existente; se não houver, crie um ambiente isolado, ex.: virtualenv em diretório temporário, ou `npm install`).
-2. **Boot**: suba a aplicação em background com o comando oficial, aguarde a porta responder e capture o log. Qualquer stack trace = falha.
-3. **Endpoints**: para **cada** rota do inventário da Fase 1, faça uma requisição real (ex.: `curl -s -o - -w '%{http_code}'`) com payload válido e, quando fizer sentido, um caso de erro (404/400). Compare status e formato com o comportamento original; diferenças só são aceitas se forem mudanças de contrato justificadas por segurança.
+2. **Boot**: suba a aplicação em background com o comando oficial, aguarde a porta responder e capture o log. Qualquer stack trace = falha. Em Python, suba com `-W always` para expor `DeprecationWarning`/`LegacyAPIWarning` remanescentes.
+3. **Endpoints**: repita **as mesmas requisições do baseline** (3.1 passo 4) e compare status e corpo (ignorando campos voláteis como timestamps e tokens). Diferenças só são aceitas se forem mudanças de contrato justificadas por segurança/integridade — liste cada uma no resumo. Inclua também os casos novos (ex.: rota admin sem token → 403, payload inválido → 400 em vez de 500).
 4. **Varredura final**: rode novamente os padrões de grep do catálogo nos arquivos novos para confirmar que os findings CRITICAL/HIGH foram eliminados.
-5. Encerre o processo da aplicação e remova artefatos gerados pelo teste (bancos de dados locais, caches).
+5. Encerre o processo da aplicação e remova artefatos gerados pelo teste (bancos de dados locais, caches, `__pycache__`). Atenção: launchers como `npm start` criam processos filhos — inicie o servidor em um grupo próprio (`setsid`) e encerre o grupo inteiro (`kill -- -<PGID>`), depois confirme que a porta ficou livre (`lsof -ti:<porta>` vazio). Um servidor órfão na porta invalida a validação seguinte.
 6. Se algo falhar: corrija e valide de novo (até 3 iterações). Se ainda falhar, reporte honestamente o que ficou pendente.
 
 ### 3.4 Resumo final
