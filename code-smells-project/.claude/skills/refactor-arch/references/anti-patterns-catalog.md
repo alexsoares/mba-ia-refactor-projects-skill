@@ -278,7 +278,7 @@ Se nenhuma API deprecated for encontrada, escreva no relatório: `Deprecated API
 ## AP-22 — `print` / `console.log` como log — **LOW**
 
 **Sinais de detecção**
-- `print(` / `console.log(` em código de aplicação para registrar eventos e erros.
+- `print(` / `console.log(` em código de aplicação para registrar eventos e erros (grep: `\bprint\(` — sem o `\b` o padrão casa com `Blueprint(`).
 - Mensagens de log com dados pessoais (e-mail no login) — sobe para AP-06 se houver segredo.
 
 **Correção**: Playbook **P-19** (logger da stack: `logging` / `console` encapsulado com níveis).
@@ -313,5 +313,6 @@ grep -rnE "except:|except Exception|catch\s*\(\w*\)\s*\{\s*\}" <src>
 # APIs deprecated
 grep -rnE "\.query\.get\(|utcnow\(|new Buffer\(|url\.parse\(|createCipher\(" <src>
 # Logs
-grep -rnE "print\(|console\.log\(" <src>
+# (o \b evita falso positivo com "Blueprint(")
+grep -rnE "\bprint\(|console\.log\(" <src>
 ```
