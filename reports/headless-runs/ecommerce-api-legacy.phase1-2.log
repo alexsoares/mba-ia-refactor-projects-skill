@@ -1,0 +1,219 @@
+================================
+PHASE 1: PROJECT ANALYSIS
+================================
+Language:      JavaScript (Node.js v22.23.2, local runtime; no `engines` declared)
+Framework:     Express ^4.18.2 (resolved 4.22.1 in package-lock)
+Dependencies:  sqlite3 ^5.1.6 (resolved 5.1.7)
+Domain:        LMS (course platform) with a checkout/payment flow (users, courses, enrollments, payments, audit logs)
+Architecture:  Monolithic, no layers. `AppManager.js` opens the DB, creates the schema, seeds data, registers routes and holds the business rules and SQL. `utils.js` mixes config, cache and hashing.
+Source files:  3 files analyzed (~180 lines)
+DB tables:     users, courses, enrollments, payments, audit_logs
+Database:      In-memory SQLite (`:memory:`) via the raw sqlite3 driver (callbacks), seeded at boot
+Entry point:   src/app.js (npm start → node src/app.js, port 3000)
+Endpoints:     3 routes mapped
+================================
+
+| Method | Path | Handler (file:line) |
+|---|---|---|
+| POST | /api/checkout | src/AppManager.js:28 (inline arrow in `setupRoutes`) |
+| GET | /api/admin/financial-report | src/AppManager.js:80 (inline arrow in `setupRoutes`) |
+| DELETE | /api/users/:id | src/AppManager.js:131 (inline arrow in `setupRoutes`) |
+
+Responsibility map:
+- `src/app.js`: [bootstrap]
+- `src/AppManager.js`: [routing] [http-parsing] [validation] [business] [data-access] [serialization] [bootstrap/schema+seed] [side-effects]
+- `src/utils.js`: [config] [state/cache] [crypto]
+
+```markdown
+================================
+ARCHITECTURE AUDIT REPORT
+================================
+Project: ecommerce-api-legacy
+Stack:   JavaScript (Node.js) + Express 4.22.1
+Files:   3 analyzed | ~180 lines of code
+Date:    2026-10-26
+
+## Summary
+CRITICAL: 5 | HIGH: 5 | MEDIUM: 4 | LOW: 4
+
+| # | Severity | ID | Finding | Location |
+|---|---|---|---|---|
+| 1 | CRITICAL | AP-01 | Hardcoded credentials and live gateway key | src/utils.js:2-5 |
+| 2 | CRITICAL | AP-03 | AppManager God Class (DB + schema + seed + routes + rules) | src/AppManager.js:4-139 |
+| 3 | CRITICAL | AP-04 | Admin report and user deletion without authentication | src/AppManager.js:80, src/AppManager.js:131 |
+| 4 | CRITICAL | AP-05 | Insecure password hashing (base64 `badCrypto`) and plaintext seed password | src/utils.js:17-23 |
+| 5 | CRITICAL | AP-06 | Card number and gateway key written to the log | src/AppManager.js:45 |
+| 6 | HIGH | AP-07 | Business rules inside route handlers | src/AppManager.js:28-78 |
+| 7 | HIGH | AP-08 | Hard coupling: DB created inside the class, concrete modules required | src/AppManager.js:7 |
+| 8 | HIGH | AP-09 | Mutable global state (`globalCache`, `totalRevenue`) | src/utils.js:9-15 |
+| 9 | HIGH | AP-10 | Multi-step checkout without a transaction; DELETE leaves orphan rows | src/AppManager.js:50-61, src/AppManager.js:133 |
+| 10 | HIGH | AP-11 | Callback hell, manual counters, `self = this` | src/AppManager.js:37-77, src/AppManager.js:83-128 |
+| 11 | MEDIUM | AP-13 | N+1 queries in the financial report | src/AppManager.js:89-108 |
+| 12 | MEDIUM | AP-14 | Missing type validation in checkout | src/AppManager.js:29-35 |
+| 13 | MEDIUM | AP-15 | Duplicated "close course in report" block | src/AppManager.js:96-98, src/AppManager.js:119-121 |
+| 14 | MEDIUM | AP-16 | Errors swallowed or masked; no central handler | src/AppManager.js:38, src/AppManager.js:92 |
+| 15 | LOW | AP-19 | Magic strings and numbers (payment rule, status, default password) | src/AppManager.js:46 |
+| 16 | LOW | AP-20 | Poor naming (`u`, `e`, `p`, `cc`, `AppManager`, `badCrypto`) | src/AppManager.js:29-33 |
+| 17 | LOW | AP-21 | Dead code: unused imports, exports and config | src/AppManager.js:2 |
+| 18 | LOW | AP-22 | `console.log` used as the logger | src/utils.js:13 |
+
+## Findings
+
+### #1 [CRITICAL] Hardcoded credentials / secrets (AP-01)
+File: src/utils.js:2
+File: src/utils.js:3
+File: src/utils.js:4
+File: src/utils.js:5
+Description: The `config` object has literal secrets: `dbUser: "admin_master"`, `dbPass: "senha_super_secreta_prod_123"`, `paymentGatewayKey: "pk_live_1234567890abcdef"` (live key prefix `pk_live_`) and `smtpUser: "no-reply@fullcycle.com.br"`. The port is also fixed (`port: 3000`, line 6).
+Impact: Anyone with access to the repo or its git history gets the production credentials. Secrets cannot be rotated or varied per environment.
+Recommendation: Move them to a config module that reads environment variables, with a `.env.example` that has no real values, and keep defaults only for non-sensitive values (Playbook P-01).
+
+### #2 [CRITICAL] God Class / God Method (AP-03)
+File: src/AppManager.js:4-139
+File: src/AppManager.js:25-138
+Description: The `AppManager` class creates the connection (`new sqlite3.Database(':memory:')`, line 7), creates the schema and seeds it (`initDb`, lines 10-23), and registers every route (`setupRoutes`, lines 25-138). That single method is ~114 lines and contains HTTP parsing, validation, the payment rule, user creation, enrollment, the audit log, the financial report and the deletion.
+Impact: Nothing can be tested in isolation, and any change touches every domain at once. The class has 6+ responsibilities.
+Recommendation: Split it into config / database (connection + schema + seed) / models / controllers / routes / composition root (Playbook P-03 + P-04).
+
+### #3 [CRITICAL] Admin and destructive endpoints without authentication (AP-04)
+File: src/AppManager.js:80
+File: src/AppManager.js:131-136
+Description: `GET /api/admin/financial-report` returns revenue and student names for every course, and `DELETE /api/users/:id` runs `DELETE FROM users WHERE id = ?`. Neither checks identity or permission.
+Impact: Any client can read financial data and student PII, and can delete any user.
+Recommendation: Add an authorization middleware with `ADMIN_TOKEN` from config, the `X-Admin-Token` header, constant-time comparison, and fail-closed behavior (403 when no token is configured) (Playbook P-12).
+
+### #4 [CRITICAL] Insecure password storage / hashing (AP-05)
+File: src/utils.js:17-23
+File: src/AppManager.js:68
+File: src/AppManager.js:18
+Description: `badCrypto(pwd)` concatenates the first 2 characters of `Buffer.from(pwd).toString('base64')` 10,000 times and returns `hash.substring(0, 10)`. That is reversible encoding, with no salt, and it depends only on the first 2 base64 characters (≈ the first byte or two of the password). The checkout falls back to a default password, `badCrypto(p || "123456")` (line 68). The seed stores the password in plain text: `'123'` (line 18).
+Impact: Different passwords produce the same "hash" (any password starting with the same letter collides). A database leak exposes the credentials directly.
+Recommendation: Use an adaptive hash with salt from the standard library (`crypto.scrypt` + `crypto.randomBytes` + `timingSafeEqual`) and remove the default password (Playbook P-05).
+
+### #5 [CRITICAL] Sensitive data exposed in the log (AP-06)
+File: src/AppManager.js:45
+Description: `console.log(\`Processando cartão ${cc} na chave ${config.paymentGatewayKey}\`)` prints the full card number (PAN) and the payment gateway key.
+Impact: Card data and the secret key leak to stdout and to log aggregators, which also violates PCI-DSS.
+Recommendation: Never log the PAN or the key. At most log the last 4 digits, through a logger with levels (Playbook P-06 + P-19).
+
+### #6 [HIGH] Business rules in the HTTP layer (Fat Route) (AP-07)
+File: src/AppManager.js:28-78
+File: src/AppManager.js:80-129
+Description: The checkout handler decides the payment (`cc.startsWith("4") ? "PAID" : "DENIED"`, line 46), creates the user, creates the enrollment, payment and audit rows, and writes to the cache, all inside the route. The report handler computes `courseData.revenue += payment.amount` (lines 108-110) and assembles the response.
+Impact: The rules are tied to Express, so they cannot be reused or tested without starting the server.
+Recommendation: Move the flow to `CheckoutController` / `ReportController` and keep each route to request → controller → response (Playbook P-04).
+
+### #7 [HIGH] Hard coupling without dependency injection (AP-08)
+File: src/AppManager.js:7
+File: src/AppManager.js:1-2
+File: src/app.js:9-11
+Description: The constructor instantiates `new sqlite3.Database(':memory:')` itself and requires the concrete `./utils` module (config, cache, hash). `app.js` depends on `new AppManager()` with no way to swap anything.
+Impact: The DB and services cannot be replaced with fakes in tests, and changing the infrastructure means editing business rules.
+Recommendation: Inject the DB connection and services through constructors, assembled in a single composition root (Playbook P-07).
+
+### #8 [HIGH] Mutable global state (AP-09)
+File: src/utils.js:9
+File: src/utils.js:10
+File: src/utils.js:12-15
+Description: `let globalCache = {}` and `let totalRevenue = 0` live at module scope and are exported. `logAndCache` writes `globalCache[key] = data` on every checkout (AppManager.js:59) and never evicts anything.
+Impact: Unbounded memory growth, state shared between requests and tests, and a `totalRevenue` value that is exported "by value" and never stays in sync.
+Recommendation: Remove the global state. If a cache is needed, encapsulate it in an injected class (Playbook P-07 / P-08).
+
+### #9 [HIGH] Multi-step write without a transaction / broken referential integrity (AP-10)
+File: src/AppManager.js:69
+File: src/AppManager.js:50-61
+File: src/AppManager.js:133-135
+Description: The checkout does `INSERT users` → `INSERT enrollments` → `INSERT payments` → `INSERT audit_logs` with no `BEGIN/COMMIT/ROLLBACK`. The deletion runs `DELETE FROM users WHERE id = ?` without touching `enrollments`/`payments`, and the response itself says so: "as matrículas e pagamentos ficaram sujos no banco" ("the enrollments and payments were left dirty in the database").
+Impact: A failure halfway through leaves an enrollment without a payment, or a user without an enrollment. The deletion leaves orphan rows, which then show up as 'Unknown' in the report.
+Recommendation: Put the checkout in a single transaction, and delete the dependents (payments → enrollments → user) in a transaction (Playbook P-09).
+
+### #10 [HIGH] Callback hell / nested async flow (AP-11)
+File: src/AppManager.js:26
+File: src/AppManager.js:37-77
+File: src/AppManager.js:83-128
+Description: Callbacks are nested 5 levels deep in the checkout (`db.get` → `db.get` → `db.run` → `db.run` → `db.run`) and 4 levels in the report. The report uses manual counters (`coursesPending--`, `enrPending--; if (enrPending === 0) ...`, lines 86-121), and `const self = this` (line 26) works around `function(err)`.
+Impact: The flow is hard to read, errors are silenced, and a response may be sent twice or never.
+Recommendation: Promisify the driver (`util.promisify` / a small wrapper) and use `async/await` (Playbook P-10).
+
+### #11 [MEDIUM] N+1 queries (AP-13)
+File: src/AppManager.js:89-92
+File: src/AppManager.js:102-106
+Description: For each course, `SELECT * FROM enrollments WHERE course_id = ?`, and for each enrollment, `SELECT name, email FROM users WHERE id = ?` plus `SELECT amount, status FROM payments WHERE enrollment_id = ?`. That is 1 + C + 2·E queries in total.
+Impact: Latency grows linearly with the number of enrollments.
+Recommendation: Use a single query with `LEFT JOIN` across courses/enrollments/users/payments and group in memory (Playbook P-13).
+
+### #12 [MEDIUM] Missing/inconsistent input validation (AP-14)
+File: src/AppManager.js:29-35
+File: src/AppManager.js:46
+Description: Only presence is checked (`if (!u || !e || !cid || !cc)`). There are no type checks: `cc.startsWith("4")` runs inside a sqlite callback, so a `card` sent as a number throws an uncaught `TypeError` outside the Express stack, which crashes the process. `pwd` is optional and silently becomes "123456".
+Impact: A single malformed request takes down the whole API, and users are created with a known password.
+Recommendation: Use one validator for the checkout payload (string types, card made of digits, required password), returning 400 (Playbook P-14).
+
+### #13 [MEDIUM] Duplicated code (AP-15)
+File: src/AppManager.js:96-98
+File: src/AppManager.js:119-121
+Description: The block `report.push(courseData); coursesPending--; if (coursesPending === 0) res.json(report);` is repeated in two branches of the report.
+Impact: The completion logic is spread out, which makes divergent changes and double responses easy.
+Recommendation: Replace it with aggregation in the model / shared function, and remove the manual counter (Playbook P-15).
+
+### #14 [MEDIUM] Error handling not centralized / errors swallowed (AP-16)
+File: src/AppManager.js:38
+File: src/AppManager.js:57-61
+File: src/AppManager.js:92-93
+File: src/AppManager.js:104-106
+File: src/AppManager.js:133-135
+Description: Line 38 turns any DB error into 404 "Curso não encontrado" ("course not found"). The audit_logs callback ignores `err` (57). The report ignores `err` in 3 queries. At 92-93, if the query fails, `enrollments.length` throws a TypeError and crashes the process. The DELETE ignores `err` and always replies 200. Error responses are plain text (`res.send("Erro DB")`) while successes are JSON, and there is no `(err, req, res, next)` middleware.
+Impact: Errors are silent, status codes are wrong, the process can crash, and the error format is inconsistent.
+Recommendation: Use domain exceptions (`NotFoundError`, `ValidationError`...) and one central error middleware that keeps the current bodies (Playbook P-11).
+
+### #15 [LOW] Magic numbers / magic strings (AP-19)
+File: src/AppManager.js:46
+File: src/AppManager.js:48
+File: src/AppManager.js:68
+File: src/utils.js:6
+Description: The payment rule is coded as a literal (`cc.startsWith("4")`). The status values `"PAID"`/`"DENIED"` are repeated (lines 46, 48, 108). The default password is `"123456"`, and the port `3000` is fixed.
+Impact: Business rules are implicit and spread through the code.
+Recommendation: Use named constants in the domain module (`PaymentStatus`, the approval rule), and take the port from config (Playbook P-17).
+
+### #16 [LOW] Poor naming (AP-20)
+File: src/AppManager.js:29-33
+File: src/AppManager.js:4
+File: src/utils.js:17
+Description: Internal variables `u`, `e`, `p`, `cid`, `cc`, plus `c`/`enr` in the report. Names that misrepresent what they are: `AppManager` (God Class), `badCrypto`, and `utils` containing config. The contract fields (`usr`, `eml`, `pwd`, `c_id`, `card`) must stay as they are.
+Impact: The code is hard to read, and the names hide responsibilities.
+Recommendation: Rename the internal variables and modules only (Playbook P-18).
+
+### #17 [LOW] Unused imports / dead code (AP-21)
+File: src/AppManager.js:2
+File: src/utils.js:10
+File: src/utils.js:25
+File: src/utils.js:2-3
+File: src/utils.js:5
+Description: `totalRevenue` is imported and never used. `globalCache` and `totalRevenue` are exported and never read anywhere else. `config.dbUser`, `config.dbPass` and `config.smtpUser` are never used (the DB is in-memory and there is no SMTP).
+Impact: Noise, and secrets that look like they are needed when they are not.
+Recommendation: Remove the dead exports, imports and config (Playbook P-18).
+
+### #18 [LOW] `console.log` as the logger (AP-22)
+File: src/utils.js:13
+File: src/app.js:13
+File: src/AppManager.js:45
+Description: `console.log("[LOG] Salvando no cache...")`, the boot message, and the payment log (the last one is also #5).
+Impact: No log levels and no way to filter or silence output per environment.
+Recommendation: Use a small encapsulated logger with levels (Playbook P-19).
+
+## Deprecated APIs
+none detected for Node.js 22 + Express 4.22.1 + sqlite3 5.1.7 (no `new Buffer`, `url.parse`, `createCipher`, `req.param`, `app.del` or `body-parser`; the project already uses `express.json()` and `Buffer.from`). The nested-callback node-sqlite3 API is not deprecated but is obsolete; it is covered in #10.
+
+## Notes
+- All queries already use `?` placeholders, so there is no SQL Injection (AP-02 not reported).
+- There is no debug flag or fake token (AP-12 not reported), and no email sending (AP-18 not reported).
+- The DB is in-memory and seeded at boot, so the baseline will be captured with a fresh process.
+- There is no `reports/` directory at the repo root, so the report is only printed.
+
+================================
+Total: 18 findings
+================================
+
+Phase 2 complete. Proceed with refactoring (Phase 3)? [y/n]
+```
+exit=0

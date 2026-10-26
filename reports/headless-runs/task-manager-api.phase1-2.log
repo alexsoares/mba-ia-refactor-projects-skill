@@ -1,0 +1,297 @@
+================================
+PHASE 1: PROJECT ANALYSIS
+================================
+Language:      Python 3.10.12 (local runtime; no version declared)
+Framework:     Flask 3.0.0
+Dependencies:  flask-sqlalchemy 3.1.1, flask-cors 4.0.0, marshmallow 3.20.1 (declared, unused), requests 2.31.0 (declared, unused), python-dotenv 1.0.0 (declared, unused)
+Domain:        Task Manager API (tasks, users, categories, productivity reports)
+Architecture:  Partial layers — `models/`, `routes/`, `services/` and `utils/` exist, but route handlers do validation, business rules, ORM queries and serialization; config is hardcoded in `app.py`
+Source files:  15 files analyzed (~1160 lines; includes `seed.py` and 4 `__init__.py`)
+DB tables:     tasks, users, categories
+Database:      SQLite file (`tasks.db`) via the Flask-SQLAlchemy ORM (SQLAlchemy 2.x)
+Entry point:   app.py (`python seed.py && python app.py`, port 5000)
+Endpoints:     22 routes mapped
+================================
+
+| Method | Path | Handler (file:line) |
+|---|---|---|
+| GET | / | `index` (app.py:26) |
+| GET | /health | `health` (app.py:22) |
+| GET | /tasks | `get_tasks` (routes/task_routes.py:11) |
+| GET | /tasks/<id> | `get_task` (routes/task_routes.py:65) |
+| POST | /tasks | `create_task` (routes/task_routes.py:85) |
+| PUT | /tasks/<id> | `update_task` (routes/task_routes.py:156) |
+| DELETE | /tasks/<id> | `delete_task` (routes/task_routes.py:225) |
+| GET | /tasks/search | `search_tasks` (routes/task_routes.py:240) |
+| GET | /tasks/stats | `task_stats` (routes/task_routes.py:273) |
+| GET | /users | `get_users` (routes/user_routes.py:10) |
+| GET | /users/<id> | `get_user` (routes/user_routes.py:27) |
+| POST | /users | `create_user` (routes/user_routes.py:42) |
+| PUT | /users/<id> | `update_user` (routes/user_routes.py:92) |
+| DELETE | /users/<id> | `delete_user` (routes/user_routes.py:134) |
+| GET | /users/<id>/tasks | `get_user_tasks` (routes/user_routes.py:153) |
+| POST | /login | `login` (routes/user_routes.py:185) |
+| GET | /reports/summary | `summary_report` (routes/report_routes.py:12) |
+| GET | /reports/user/<id> | `user_report` (routes/report_routes.py:103) |
+| GET | /categories | `get_categories` (routes/report_routes.py:157) |
+| POST | /categories | `create_category` (routes/report_routes.py:167) |
+| PUT | /categories/<id> | `update_category` (routes/report_routes.py:190) |
+| DELETE | /categories/<id> | `delete_category` (routes/report_routes.py:211) |
+
+```
+================================
+ARCHITECTURE AUDIT REPORT
+================================
+Project: task-manager-api
+Stack:   Python + Flask 3.0.0
+Files:   15 analyzed | ~1160 lines of code
+Date:    2026-10-26
+
+## Summary
+CRITICAL: 5 | HIGH: 3 | MEDIUM: 6 | LOW: 5
+
+| # | Severity | ID | Finding | Location |
+|---|---|---|---|---|
+| 1 | CRITICAL | AP-01 | Hardcoded SECRET_KEY and SMTP credentials | app.py:13 |
+| 2 | CRITICAL | AP-03 | God methods / multi-domain route file | routes/report_routes.py:12-101 |
+| 3 | CRITICAL | AP-04 | Unauthenticated user deletion and role escalation | routes/user_routes.py:134-151 |
+| 4 | CRITICAL | AP-05 | Passwords hashed with unsalted MD5 | models/user.py:27-32 |
+| 5 | CRITICAL | AP-06 | Password hash returned in API responses | models/user.py:21 |
+| 6 | HIGH | AP-07 | Business rules and ORM queries inside route handlers | routes/task_routes.py:85-154 |
+| 7 | HIGH | AP-08 | Global db singleton and self-instantiated SMTP dependency | services/notification_service.py:5-19 |
+| 8 | HIGH | AP-12 | debug=True on 0.0.0.0, fake predictable token, open CORS | app.py:34 |
+| 9 | MEDIUM | AP-09 | In-memory notification list on service instance | services/notification_service.py:6 |
+| 10 | MEDIUM | AP-13 | N+1 queries and repeated COUNTs | routes/task_routes.py:41-57 |
+| 11 | MEDIUM | AP-14 | Missing/inconsistent input validation (500s on bad input) | routes/task_routes.py:113 |
+| 12 | MEDIUM | AP-15 | Duplicated overdue logic, serialization and rules | routes/task_routes.py:30-39 |
+| 13 | MEDIUM | AP-16 | Bare excepts, no centralized error handler | routes/task_routes.py:62 |
+| 14 | MEDIUM | AP-17 | Deprecated APIs: Query.get, datetime.utcnow | routes/task_routes.py:42 |
+| 15 | LOW | AP-19 | Magic strings/numbers (statuses, roles, limits) | routes/task_routes.py:110 |
+| 16 | LOW | AP-20 | Poor naming (t, u, c, p1..p5, d, e) | routes/report_routes.py:24-28 |
+| 17 | LOW | AP-21 | Unused imports, dead code, unused dependencies | utils/helpers.py:1-116 |
+| 18 | LOW | AP-22 | print() used as logging | routes/task_routes.py:149 |
+| 19 | LOW | AP-23 | Verbose conditionals / type(x) == list | models/task.py:38-60 |
+
+## Findings
+
+### #1 [CRITICAL] Hardcoded credentials / secrets (AP-01)
+File: app.py:13
+File: services/notification_service.py:7-10
+Description: `app.config['SECRET_KEY'] = 'super-secret-key-123'` is a literal in the entry point. `NotificationService.__init__` hardcodes the SMTP host, the user `'taskmanager@gmail.com'` and `self.email_password = 'senha123'`.
+Impact: Anyone with access to the repo or its git history gets the Flask signing key and the mailbox credentials. Neither can be rotated per environment without editing code.
+Recommendation: Move SECRET_KEY, the DB URI and the SMTP settings into a config module that reads environment variables, and ship a `.env.example` without real values (Playbook P-01).
+
+### #2 [CRITICAL] God Method / God File (AP-03)
+File: routes/report_routes.py:12-101
+File: routes/report_routes.py:157-223
+File: routes/task_routes.py:11-63
+Description: `summary_report` is 90 lines. It runs 12 separate queries, computes overdue lists, 7-day activity and per-user productivity, and builds the response, all in one function. `report_routes.py` also holds the full Category CRUD (`/categories`), which is a second domain inside the reports blueprint. `get_tasks` is 53 lines and mixes querying, overdue rules, joins done by hand and serialization. Each of these files carries routing, HTTP parsing, validation, business logic, data access and serialization (6 responsibilities).
+Impact: None of this can be unit-tested without an HTTP request context, and any change to reports or categories touches the same file.
+Recommendation: Split these into `CategoryController`, `ReportController` and `TaskController`, with category routes in their own blueprint. Route handlers should only map HTTP to a controller (Playbook P-03 + P-04).
+
+### #3 [CRITICAL] Destructive/privileged endpoints without authentication (AP-04)
+File: routes/user_routes.py:134-151
+File: routes/user_routes.py:119-125
+File: routes/user_routes.py:52
+File: routes/user_routes.py:71
+Description: `DELETE /users/<id>` deletes any user and all of their tasks (`for t in tasks: db.session.delete(t)`) with no identity check. `POST /users` accepts `role` from the body (`data.get('role', 'user')`, allowing `'admin'`). `PUT /users/<id>` lets any caller set `role` and `active` on any account.
+Impact: Any anonymous client can make itself admin, deactivate other users or wipe a user's data.
+Recommendation: Protect user deletion and any assignment of a privileged role or `active` status with an admin-token middleware (`X-Admin-Token`, constant-time comparison, fail-closed) (Playbook P-12).
+
+### #4 [CRITICAL] Insecure password hashing (AP-05)
+File: models/user.py:27-29
+File: models/user.py:31-32
+Description: `self.password = hashlib.md5(pwd.encode()).hexdigest()` hashes passwords with unsalted MD5. `check_password` compares with `==`, which is not constant time.
+Impact: A leaked database lets an attacker recover passwords instantly with rainbow tables. The seed passwords `1234`, `abcd` and `pass` would be cracked trivially.
+Recommendation: Use `werkzeug.security.generate_password_hash` and `check_password_hash` (already installed with Flask). Keep verifying existing MD5 hashes during a transition (Playbook P-05).
+
+### #5 [CRITICAL] Sensitive data exposure — password hash in responses (AP-06)
+File: models/user.py:21
+File: routes/user_routes.py:33
+File: routes/user_routes.py:85
+File: routes/user_routes.py:129
+File: routes/user_routes.py:209
+Description: `User.to_dict()` includes `'password': self.password`. That dict is returned by `GET /users/<id>`, `POST /users`, `PUT /users/<id>` and `POST /login`.
+Impact: Every client can read the MD5 hash of any user, and combined with #4 that gives them the plaintext password.
+Recommendation: Use an explicit user serializer that never includes `password` (Playbook P-06).
+
+### #6 [HIGH] Business logic in route handlers — Fat Routes (AP-07)
+File: routes/task_routes.py:85-154
+File: routes/task_routes.py:156-223
+File: routes/task_routes.py:273-299
+File: routes/user_routes.py:42-90
+File: routes/user_routes.py:92-132
+File: routes/report_routes.py:103-155
+Description: The handlers call `Task.query`, `User.query` and `db.session` directly. They also do the validation (title length, status, priority), check that referenced user/category exist, parse dates, join tags, and compute statistics and completion rates inline.
+Impact: The business rules are tied to Flask and cannot be reused or tested on their own. The same rules drift between create and update.
+Recommendation: Move the flow into controllers that receive their dependencies (models/session) by injection, and keep each route to under ~10 lines (Playbook P-04).
+
+### #7 [HIGH] Tight coupling without dependency injection (AP-08)
+File: services/notification_service.py:5-10
+File: services/notification_service.py:15
+File: routes/task_routes.py:2
+File: routes/user_routes.py:2
+File: routes/report_routes.py:2
+Description: `NotificationService` builds its own config and opens `smtplib.SMTP(...)` directly inside `send_email`. Every route module imports the global `db` from `database` and the concrete models, with no seam for substitution.
+Impact: Tests cannot swap in a fake mailer or session, and changing infrastructure means editing the business code.
+Recommendation: Use a composition root (app factory) that builds the config, the session and the controllers. Inject the SMTP settings and the sender into the notification service (Playbook P-07).
+
+### #8 [HIGH] Insecure runtime config / fake authentication (AP-12)
+File: app.py:34
+File: routes/user_routes.py:210
+File: app.py:15
+Description: `app.run(debug=True, host='0.0.0.0', port=5000)` exposes the Werkzeug debugger on every interface. Login returns `'token': 'fake-jwt-token-' + str(user.id)`, a predictable unsigned token. `CORS(app)` allows every origin.
+Impact: The debugger console allows remote code execution. Anyone can forge a "token" for any user id.
+Recommendation: Read DEBUG, HOST, PORT and CORS origins from the environment with safe defaults. Issue a signed token (`itsdangerous`, which ships with Flask, keyed with SECRET_KEY) and keep the response shape (Playbook P-01, P-12).
+
+### #9 [MEDIUM] Mutable in-memory state on a service instance (AP-09)
+File: services/notification_service.py:6
+File: services/notification_service.py:31-36
+Description: `self.notifications = []` keeps notification history in process memory and grows without bound. This is downgraded from HIGH because `NotificationService` is never instantiated anywhere in the app, so the impact is currently limited.
+Impact: If the service were wired in, history would be lost on restart, inconsistent across workers and leak memory.
+Recommendation: Remove the in-memory store (or inject a store) and keep the service stateless (Playbook P-07 / P-08).
+
+### #10 [MEDIUM] N+1 queries / repeated counts (AP-13)
+File: routes/task_routes.py:41-57
+File: routes/user_routes.py:22
+File: routes/report_routes.py:53-68
+File: routes/report_routes.py:163
+File: routes/report_routes.py:15-28
+File: routes/task_routes.py:275-281
+Description: `get_tasks` calls `User.query.get` and `Category.query.get` for every task. `get_users` triggers a lazy load with `len(u.tasks)` per user. `summary_report` runs `Task.query.filter_by(user_id=u.id).all()` per user. `get_categories` runs a `count()` per category. Status and priority counts are 9 separate `COUNT` queries plus a full `Task.query.all()`, and the same pattern appears in `task_stats`.
+Impact: Latency grows linearly with the number of tasks, users and categories.
+Recommendation: Use eager loading (`joinedload`/`selectinload`) and `GROUP BY` aggregations (Playbook P-13).
+
+### #11 [MEDIUM] Missing/inconsistent input validation (AP-14)
+File: routes/task_routes.py:113
+File: routes/task_routes.py:166-170
+File: routes/task_routes.py:182
+File: routes/task_routes.py:260-264
+File: routes/report_routes.py:196-197
+File: routes/user_routes.py:102-103
+File: routes/report_routes.py:180
+Description: `priority < 1` with a string priority raises `TypeError`, which becomes a 500. `len(data['title'])` with `title: null` raises a 500. `int(priority)` and `int(user_id)` in search raise `ValueError` on non-numeric query params. `update_category` uses `'name' in data` without a `None` check, so an empty body gives a 500. `update_user` accepts an empty `name`. Category `color` is not validated even though `is_valid_color` exists. `process_task_data` and `validate_email` in `utils/helpers.py` are unused and reimplemented inline.
+Impact: Malformed input produces 500s instead of 400s, and create and update enforce different rules.
+Recommendation: Use one validator per resource, shared by create and update, that raises a 400 domain error (Playbook P-14).
+
+### #12 [MEDIUM] Duplicated code (AP-15)
+File: routes/task_routes.py:30-39
+File: routes/task_routes.py:71-80
+File: routes/task_routes.py:283-287
+File: routes/user_routes.py:171-180
+File: routes/report_routes.py:33-37
+File: routes/report_routes.py:132-135
+File: routes/task_routes.py:17-28
+File: routes/user_routes.py:162-169
+Description: The "overdue" rule is reimplemented 6 times even though `Task.is_overdue()` exists (models/task.py:50-60). Task serialization is hand-built in `get_tasks` and `get_user_tasks` instead of using `Task.to_dict()`. Title, status and priority checks are duplicated between create and update (task_routes.py:96-114 vs 166-184). The email regex is duplicated (user_routes.py:61, 106), and completion rate is computed in 3 places.
+Impact: When a rule changes, it has to be edited in many places, which risks inconsistent behavior.
+Recommendation: Keep each rule in one place in the model or domain and use one serializer per entity (Playbook P-06, P-15).
+
+### #13 [MEDIUM] Non-centralized error handling (AP-16)
+File: routes/task_routes.py:62
+File: routes/task_routes.py:137
+File: routes/task_routes.py:151-154
+File: routes/task_routes.py:204
+File: routes/user_routes.py:87-90
+File: routes/report_routes.py:186
+File: utils/helpers.py:46-50
+File: services/notification_service.py:23-25
+Description: There are 16 `except:` / `except Exception` blocks (+8 occurrences beyond those listed), each building its own error response, and there is no `@app.errorhandler`. `get_tasks` wraps the whole handler in a bare `except:` that hides every failure. `str(e)` is printed to stdout.
+Impact: Bugs are swallowed silently, and error handling is inconsistent and impossible to audit.
+Recommendation: Add domain exceptions (`NotFound`, `ValidationError`, `Conflict`, `Forbidden`) and a central error handler that keeps the `{'error': msg}` format (Playbook P-11).
+
+### #14 [MEDIUM] Deprecated APIs (AP-17)
+File: routes/task_routes.py:42
+File: routes/task_routes.py:51
+File: routes/user_routes.py:29
+File: routes/report_routes.py:105
+File: routes/report_routes.py:192
+File: models/task.py:15-16
+File: models/user.py:14
+File: models/category.py:11
+Description: `Model.query.get(id)` appears 18 times across the 3 route files. It is the legacy SQLAlchemy 2.x API (Flask-SQLAlchemy 3.1.1) and emits `LegacyAPIWarning`. `datetime.utcnow()` and `default=datetime.utcnow` appear in models, routes, services and helpers (+20 occurrences); this is deprecated since Python 3.12.
+Impact: Warnings today and breakage when the legacy APIs are removed or Python is upgraded.
+Recommendation: Use `db.session.get(Model, id)` and a `utcnow()` helper based on `datetime.now(timezone.utc).replace(tzinfo=None)` (the columns are naive).
+
+### #15 [LOW] Magic strings / numbers (AP-19)
+File: routes/task_routes.py:110
+File: routes/task_routes.py:177
+File: routes/user_routes.py:71
+File: routes/user_routes.py:120
+File: routes/user_routes.py:64
+File: routes/task_routes.py:96-100
+File: routes/report_routes.py:129
+File: app.py:34
+Description: The status list `['pending', 'in_progress', 'done', 'cancelled']`, the roles `['user', 'admin', 'manager']`, the minimum password length `4`, the title limits `3`/`200`, `priority <= 2` for "high priority", the priority range `1..5` and port `5000` are all inline literals. The matching constants already exist unused at utils/helpers.py:110-116.
+Impact: Rules are scattered and easy to change in one place but not the others.
+Recommendation: Define named constants in the domain module (Playbook P-17).
+
+### #16 [LOW] Poor naming (AP-20)
+File: routes/report_routes.py:24-28
+File: routes/task_routes.py:16
+File: routes/user_routes.py:14
+File: routes/report_routes.py:161
+File: models/category.py:14
+File: models/task.py:45
+Description: Single- and short-letter identifiers: `p1`..`p5` for priority counts, `t`, `u`, `c` and `cat` as loop entities, `d` for the category dict, `p` for priority, `e` for exceptions.
+Impact: The code is harder to read.
+Recommendation: Use descriptive internal names without touching the API fields (Playbook P-18).
+
+### #17 [LOW] Unused imports, dead code, unused dependencies (AP-21)
+File: app.py:7
+File: routes/task_routes.py:7
+File: routes/user_routes.py:6
+File: routes/report_routes.py:7-8
+File: models/task.py:3
+File: utils/helpers.py:3-7
+File: services/notification_service.py:4-48
+File: requirements.txt:4-6
+Description: Unused imports: `os, sys, json` (app.py), `json, os, sys, time` (task_routes.py), `hashlib, json` (user_routes.py), `format_date, calculate_percentage, json` (report_routes.py), `json` (models/task.py), and `os, json, sys, math, hashlib` (helpers). Every function and constant in `utils/helpers.py` is unused. `NotificationService` is never instantiated. `Task.validate_status`, `validate_priority` and `is_overdue` (models/task.py:38-60) and `User.is_admin` (models/user.py:34-38) are never called. `marshmallow`, `requests` and `python-dotenv` are declared but never imported.
+Impact: Noise, misleading APIs and an unnecessary dependency surface.
+Recommendation: Remove the dead code and dependencies, and reuse model methods instead of duplicating them (Playbook P-18, P-17).
+
+### #18 [LOW] print() as logging (AP-22)
+File: routes/task_routes.py:149
+File: routes/task_routes.py:153
+File: routes/task_routes.py:219
+File: routes/task_routes.py:234
+File: routes/user_routes.py:83
+File: routes/user_routes.py:89
+File: routes/user_routes.py:147
+File: utils/helpers.py:39-41
+Description: Application events and errors are written with `print(f"...")`, including the user name at creation and `str(e)` on errors (+2 in notification_service.py:21,24). The prints in `seed.py` are the CLI interface and are not a finding.
+Impact: There are no log levels or structure, and the output cannot be filtered in production.
+Recommendation: Use `logging.getLogger(__name__)` with levels (Playbook P-19).
+
+### #19 [LOW] Verbose conditionals / excessive nesting (AP-23)
+File: models/task.py:38-60
+File: models/user.py:34-38
+File: routes/task_routes.py:141
+File: routes/task_routes.py:210
+File: utils/helpers.py:103
+File: routes/task_routes.py:30-39
+Description: `if x: return True else: return False`, triple-nested `if` for overdue, `p >= 1 and p <= 5`, and `type(tags) == list`.
+Impact: The code is harder to read and the type checks are brittle.
+Recommendation: Use guard clauses, boolean expressions, `1 <= p <= 5` and `isinstance` (Playbook P-15 / P-18).
+
+## Deprecated APIs
+- routes/task_routes.py:42,51,67,117,122,158,188,195,227 — `Model.query.get(id)` → `db.session.get(Model, id)` (finding #14)
+- routes/user_routes.py:29,94,136,155 — `Model.query.get(id)` → `db.session.get(Model, id)` (finding #14)
+- routes/report_routes.py:105,192,213 — `Model.query.get(id)` → `db.session.get(Model, id)` (finding #14)
+- models/task.py:15-16, models/user.py:14, models/category.py:11 — `default=datetime.utcnow` → `default=utcnow` helper (finding #14)
+- routes/*.py, models/task.py:52, services/notification_service.py:35, utils/helpers.py:38, seed.py — `datetime.utcnow()` → `datetime.now(timezone.utc)` (finding #14; deprecated on Python ≥ 3.12, no warning on the local 3.10 runtime)
+- models/user.py:29,32 — `hashlib.md5` for passwords → `werkzeug.security` (finding #4)
+
+## Notes
+- The project already has a reasonable folder split (`models/`, `routes/`, `services/`). Phase 3 will reuse it: models stay, and controllers and config are added.
+- The API has no real authentication model at all; that is out of scope. Only privileged/destructive user operations (#3) will be gated by an admin token, and the login token will become signed (#8) with the same response shape.
+- Category deletion was checked for AP-10: SQLAlchemy's default one-to-many behavior nullifies `tasks.category_id`, and user deletion removes the user's tasks in a single commit. No transaction or integrity finding was raised.
+- No raw SQL is used (everything goes through the ORM, and `LIKE` in search is parameterized), so no AP-02. No async code, so no AP-11. Notifications are never triggered from requests, so no AP-18.
+
+================================
+Total: 19 findings
+================================
+
+Phase 2 complete. Proceed with refactoring (Phase 3)? [y/n]
+```
+exit=0

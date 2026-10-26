@@ -327,6 +327,18 @@ Testes adicionais executados:
 - **P2**: 20 checkouts **concorrentes** → 20× 200 e receita consistente (10967 = 11 × 997; 4970 = 10 × 497), o que valida a fila de transações. JSON malformado → 400; id inexistente → 404.
 - **P3**: banco legado com MD5 → login 200 e hash migrado para `scrypt`. `priority: "alta"`, `title: null` e `?priority=x` → 400 (antes: 500). Excluir uma categoria deixa 0 tasks com FK órfã.
 
+### Execução independente da skill via CLI (`claude -p "/refactor-arch"`)
+
+Depois da iteração final, rodei a skill pelo comando real do Claude Code em **cópias limpas dos 3 projetos originais** (branch `main`), em modo headless e somente leitura (`--disallowedTools "Edit,Write,NotebookEdit"`), para confirmar que as Fases 1 e 2 funcionam sem ajuda do autor. Os logs completos estão em [`reports/headless-runs/`](reports/headless-runs/).
+
+| Projeto | Stack detectada | Findings (C/H/M/L) | APIs deprecated | Parou na confirmação? | Arquivos modificados |
+|---|---|---|---|---|---|
+| P1 | Python 3.10 + Flask 3.1.1 | 21 (6/5/5/5) | none detected | ✅ `Proceed with refactoring (Phase 3)? [y/n]` | 0 (`git status` limpo) |
+| P2 | Node.js 22 + Express 4 | 18 (5/5/4/4) | none detected | ✅ | 0 |
+| P3 | Python 3.10 + Flask 3.0.0 | 19 (5/3/6/5) | `Query.get` (×16), `datetime.utcnow` | ✅ | 0 |
+
+As contagens variam em ±2 em relação aos relatórios oficiais (só no agrupamento e na severidade de findings limítrofes). O resultado é estável: os mesmos CRITICAL/HIGH aparecem em todas as execuções.
+
 ### Mudanças de contrato (todas justificadas por segurança/integridade)
 
 | Projeto | Mudança |
