@@ -1,0 +1,298 @@
+Auditoria em andamento: li todos os arquivos e rodei os greps do catálogo. Segue o relatório.
+
+```
+================================
+PHASE 1: PROJECT ANALYSIS
+================================
+Language:      Python 3.10.12 (runtime local; versão não declarada)
+Framework:     Flask 3.1.1
+Dependencies:  flask-cors 5.0.1
+Domain:        E-commerce API (produtos, usuários/login, pedidos com itens, relatório de vendas)
+Architecture:  Monolítica com separação nominal — models.py mistura SQL, regra de negócio (estoque, desconto) e serialização; app.py tem rotas admin com SQL direto; controllers.py também acessa o banco
+Source files:  4 files analyzed (~780 lines)
+DB tables:     produtos, usuarios, pedidos, itens_pedido
+Database:      SQLite (loja.db) via sqlite3 cru (SQL manual, conexão global única)
+Entry point:   app.py (python app.py, porta 5000; o schema e o seed rodam automaticamente em get_db())
+Endpoints:     19 routes mapped
+================================
+```
+
+| Method | Path | Handler (arquivo:linha) |
+|---|---|---|
+| GET | /produtos | controllers.listar_produtos (app.py:11 → controllers.py:5) |
+| GET | /produtos/busca | controllers.buscar_produtos (app.py:12 → controllers.py:111) |
+| GET | /produtos/<int:id> | controllers.buscar_produto (app.py:13 → controllers.py:14) |
+| POST | /produtos | controllers.criar_produto (app.py:14 → controllers.py:24) |
+| PUT | /produtos/<int:id> | controllers.atualizar_produto (app.py:15 → controllers.py:64) |
+| DELETE | /produtos/<int:id> | controllers.deletar_produto (app.py:16 → controllers.py:98) |
+| GET | /usuarios | controllers.listar_usuarios (app.py:18 → controllers.py:128) |
+| GET | /usuarios/<int:id> | controllers.buscar_usuario (app.py:19 → controllers.py:136) |
+| POST | /usuarios | controllers.criar_usuario (app.py:20 → controllers.py:146) |
+| POST | /login | controllers.login (app.py:21 → controllers.py:167) |
+| POST | /pedidos | controllers.criar_pedido (app.py:23 → controllers.py:188) |
+| GET | /pedidos | controllers.listar_todos_pedidos (app.py:24 → controllers.py:229) |
+| GET | /pedidos/usuario/<int:usuario_id> | controllers.listar_pedidos_usuario (app.py:25 → controllers.py:222) |
+| PUT | /pedidos/<int:pedido_id>/status | controllers.atualizar_status_pedido (app.py:26 → controllers.py:237) |
+| GET | /relatorios/vendas | controllers.relatorio_vendas (app.py:28 → controllers.py:257) |
+| GET | /health | controllers.health_check (app.py:30 → controllers.py:264) |
+| GET | / | index (app.py:32-45) |
+| POST | /admin/reset-db | reset_database (app.py:47-57) |
+| POST | /admin/query | executar_query (app.py:59-78) |
+
+```
+================================
+ARCHITECTURE AUDIT REPORT
+================================
+Project: code-smells-project
+Stack:   Python + Flask 3.1.1
+Files:   4 analyzed | ~780 lines of code
+Date:    2026-10-26
+
+## Summary
+CRITICAL: 6 | HIGH: 5 | MEDIUM: 5 | LOW: 5
+
+| # | Severity | ID | Finding | Location |
+|---|---|---|---|---|
+| 1 | CRITICAL | AP-01 | SECRET_KEY hardcoded e repetido na resposta | app.py:7 |
+| 2 | CRITICAL | AP-02 | SQL Injection por concatenação em quase todo models.py | models.py:109-111 |
+| 3 | CRITICAL | AP-03 | God file models.py (SQL de 3 domínios + regras + serialização) | models.py:1-314 |
+| 4 | CRITICAL | AP-04 | /admin/reset-db e /admin/query sem autenticação | app.py:47-78 |
+| 5 | CRITICAL | AP-05 | Senhas em texto puro e comparadas no SQL | models.py:126-129 |
+| 6 | CRITICAL | AP-06 | Senha nas respostas de /usuarios; secret_key no /health | models.py:83 |
+| 7 | HIGH | AP-07 | Acesso a dados nas rotas/handlers HTTP | app.py:49-55 |
+| 8 | HIGH | AP-08 | get_db() global chamado em todas as funções, sem injeção | models.py:5 |
+| 9 | HIGH | AP-09 | Conexão singleton global mutável | database.py:4-10 |
+| 10 | HIGH | AP-10 | Pedido + itens + estoque sem transação; delete gera órfãos | models.py:133-169 |
+| 11 | HIGH | AP-12 | debug=True fixo + host 0.0.0.0 + CORS aberto | app.py:88 |
+| 12 | MEDIUM | AP-13 | Queries N+1 na listagem de pedidos | models.py:186-199 |
+| 13 | MEDIUM | AP-14 | Validação ausente/inconsistente (500 em corpo inválido) | controllers.py:169-170 |
+| 14 | MEDIUM | AP-15 | Serialização row→dict e listagem de pedidos duplicadas | models.py:171-233 |
+| 15 | MEDIUM | AP-16 | 17 try/except Exception que devolvem str(e) | controllers.py:10-12 |
+| 16 | MEDIUM | AP-18 | Notificações simuladas no handler; "Devolver estoque" não implementado | controllers.py:208-210 |
+| 17 | LOW | AP-19 | Magic numbers/strings (faixas de desconto, listas de status/categorias) | models.py:256-262 |
+| 18 | LOW | AP-20 | Nomenclatura ruim (`id` sombreando builtin, cursor2/cursor3) | models.py:187-191 |
+| 19 | LOW | AP-21 | Imports não usados e query morta | models.py:2 |
+| 20 | LOW | AP-22 | print() usado como log | controllers.py:8 |
+| 21 | LOW | AP-23 | Condicionais verbosas/redundantes | controllers.py:200 |
+
+## Findings
+
+### #1 [CRITICAL] Credenciais / segredos hardcoded (AP-01)
+File: app.py:7
+File: controllers.py:289
+File: database.py:75-79
+Description: `app.config["SECRET_KEY"] = "minha-chave-super-secreta-123"` no código-fonte; o mesmo literal é repetido em `"secret_key": "minha-chave-super-secreta-123"` no health check. O seed cria a conta admin com credencial fixa `("Admin", "admin@loja.com", "admin123", "admin")`.
+Impact: Qualquer pessoa com acesso ao repositório ou ao histórico git obtém a chave de assinatura de sessão e a senha do admin; não dá para rotacionar a chave por ambiente.
+Recommendation: Ler SECRET_KEY e os demais parâmetros de variáveis de ambiente num módulo de config, com `.env.example` sem valores reais (Playbook P-01).
+
+### #2 [CRITICAL] SQL Injection (AP-02)
+File: models.py:109-111
+File: models.py:47-50
+File: models.py:57-61
+File: models.py:126-129
+File: models.py:289-297
+File: models.py:279-281
+File: models.py:148-166
+File: app.py:61-69
+(+9 ocorrências: models.py:28, 68, 92, 140, 174, 188, 192, 220, 224)
+Description: Todas as queries são montadas por concatenação, ex.: `"SELECT * FROM usuarios WHERE email = '" + email + "' AND senha = '" + senha + "'"` e `" AND (nome LIKE '%" + termo + "%' ..."`. `/admin/query` executa `cursor.execute(query)` com o SQL recebido no corpo da requisição.
+Impact: Com `' OR '1'='1' --` no e-mail, o login autentica como o admin sem senha. A busca de produtos, o cadastro de produtos e o de usuários permitem ler ou apagar qualquer tabela. Um nome com apóstrofo (ex.: `Monitor 27''`) quebra o INSERT e gera 500.
+Recommendation: Usar placeholders `?` em todas as queries e montar filtros dinâmicos com uma lista de parâmetros; remover a execução de SQL arbitrário (Playbook P-02).
+
+### #3 [CRITICAL] God Class / God File (AP-03)
+File: models.py:1-314
+File: models.py:133-169
+File: models.py:235-273
+File: database.py:7-86
+Description: models.py acumula acesso a dados de produtos, usuários e pedidos, regra de negócio (checagem e débito de estoque em `criar_pedido`, faixas de desconto em `relatorio_vendas`) e formatação da resposta (dicts montados à mão). `database.get_db` abre a conexão, cria o schema e faz o seed na mesma função.
+Impact: Nenhuma regra pode ser testada sem banco real; qualquer mudança em um domínio afeta o arquivo inteiro.
+Recommendation: Separar em models por entidade (só dados), controllers com a regra de negócio, views/rotas finas e um módulo de banco com schema e seed separados (Playbook P-03 + P-04).
+
+### #4 [CRITICAL] Endpoint administrativo/destrutivo sem autenticação (AP-04)
+File: app.py:47-57
+File: app.py:59-78
+Description: `POST /admin/reset-db` executa `DELETE FROM` em todas as 4 tabelas; `POST /admin/query` executa qualquer SQL vindo de `dados.get("sql")` e faz commit quando não é SELECT. Nenhuma das duas rotas verifica identidade.
+Impact: Qualquer cliente anônimo pode apagar o banco inteiro ou ler/alterar qualquer dado (incluindo senhas).
+Recommendation: Proteger com `X-Admin-Token` comparado em tempo constante contra `ADMIN_TOKEN` da config, fail-closed; restringir `/admin/query` a uma única consulta somente leitura (Playbook P-12).
+
+### #5 [CRITICAL] Armazenamento de senha inseguro (AP-05)
+File: models.py:126-129
+File: models.py:109-111
+File: database.py:75-83
+Description: `criar_usuario` grava `senha` como recebida; `login_usuario` compara a senha em texto puro dentro do SQL (`AND senha = '" + senha + "'`); o seed insere `admin123`, `123456` e `senha123` em claro.
+Impact: Um vazamento do banco (trivial via #2 ou #4) expõe as senhas de todos os usuários, que costumam ser reutilizadas em outros sistemas.
+Recommendation: Gerar o hash com `werkzeug.security.generate_password_hash` (o Werkzeug já vem com o Flask) e validar com `check_password_hash` em Python, nunca no SQL (Playbook P-05).
+
+### #6 [CRITICAL] Exposição de dados sensíveis (AP-06)
+File: models.py:83
+File: models.py:99
+File: controllers.py:285-289
+File: controllers.py:161
+File: controllers.py:179-182
+Description: `GET /usuarios` e `GET /usuarios/<id>` devolvem o campo `"senha"`. `/health` devolve `"secret_key"`, `"db_path": "loja.db"`, `"debug": True` e `"ambiente": "producao"`. Os logs registram o e-mail em cadastro e em login (bem-sucedido ou não).
+Impact: Qualquer cliente lê as senhas de todos os usuários e a SECRET_KEY da aplicação sem autenticação.
+Recommendation: Usar um serializer explícito sem `senha`; tirar segredos e detalhes internos do health check; não logar PII (Playbook P-06, P-11).
+
+### #7 [HIGH] Acesso a dados / regra na camada HTTP (AP-07)
+File: app.py:49-55
+File: app.py:66-76
+File: controllers.py:264-274
+File: controllers.py:43-54
+Description: As rotas admin em app.py abrem cursor e executam SQL dentro do handler; `health_check` executa 4 queries direto no controller HTTP; as regras do produto (faixas de preço e estoque, tamanho do nome, categorias válidas) ficam inline no handler, misturadas com a leitura do request.
+Impact: Não dá para reaproveitar as regras fora do HTTP nem testá-las sem subir o Flask; a mesma regra precisa ser copiada no update (o que já ficou inconsistente, ver #13).
+Recommendation: Rotas finas que delegam a controllers; queries ficam nos models (Playbook P-04).
+
+### #8 [HIGH] Acoplamento forte sem injeção de dependência (AP-08)
+File: models.py:5
+File: models.py:25
+File: models.py:44
+File: models.py:106
+File: models.py:134
+File: controllers.py:2-3
+File: controllers.py:266
+File: app.py:3-4
+(+10 ocorrências de `db = get_db()` em models.py)
+Description: Toda função de model chama o `get_db()` global; os controllers importam os módulos concretos `models` e `database`.
+Impact: É impossível usar um banco de teste ou um fake sem monkeypatch; trocar a infraestrutura exige editar todas as funções.
+Recommendation: Injetar a conexão nos models e os models nos controllers via construtor, com um composition root em app.py (Playbook P-07).
+
+### #9 [HIGH] Estado global mutável (AP-09)
+File: database.py:4-10
+Description: `db_connection = None` no escopo do módulo, reatribuído com `global db_connection` e criado com `check_same_thread=False`; uma única conexão é compartilhada por todas as threads do servidor.
+Impact: Requisições concorrentes compartilham a mesma transação: o `commit()` de uma requisição persiste escritas parciais de outra (ver #10), e há risco de race conditions.
+Recommendation: Conexão por requisição gerenciada pelo ciclo de vida da app (`g` + `teardown_appcontext`) e injetada (Playbook P-08).
+
+### #10 [HIGH] Escrita multi-etapa sem transação / integridade referencial (AP-10)
+File: models.py:133-169
+File: models.py:65-70
+Description: `criar_pedido` faz INSERT do pedido, INSERT de N itens e N UPDATEs de estoque sem try/rollback; a checagem de estoque (linha 144) e o débito (linhas 163-166) são passos separados, e o UPDATE não tem guarda `estoque >= ?`. `deletar_produto` apaga o produto mesmo quando há `itens_pedido` que o referenciam.
+Impact: Uma exceção no meio do fluxo deixa um pedido sem itens ou estoque parcialmente debitado, e o próximo `commit` de qualquer requisição grava esse estado. Pedidos concorrentes podem deixar o estoque negativo. Produtos apagados viram "Desconhecido" no histórico de pedidos.
+Recommendation: Unidade de trabalho com `with conn:` (commit/rollback) e UPDATE condicional de estoque; bloquear a exclusão de produto referenciado ou tratá-la explicitamente (Playbook P-09).
+
+### #11 [HIGH] Configuração de execução insegura (AP-12)
+File: app.py:8
+File: app.py:88
+File: app.py:9
+Description: `app.config["DEBUG"] = True` e `app.run(host="0.0.0.0", port=5000, debug=True)` fixos; `CORS(app)` sem restrição de origens.
+Impact: O debugger do Werkzeug exposto na rede permite execução remota de código; o CORS aberto permite que qualquer site chame a API a partir do navegador da vítima.
+Recommendation: Ler debug, host, port e as origens de CORS da config por variável de ambiente, com debug desligado por padrão (Playbook P-01).
+
+### #12 [MEDIUM] Queries N+1 / consultas repetidas (AP-13)
+File: models.py:186-199
+File: models.py:219-231
+File: models.py:139-141
+File: models.py:155-156
+File: models.py:239-254
+File: controllers.py:268-274
+Description: Para cada pedido é feito 1 SELECT de itens e, para cada item, mais 1 SELECT do nome do produto (`cursor2`/`cursor3`). `criar_pedido` busca cada produto duas vezes. O relatório e o health check usam 5 e 4 `COUNT`/`SUM` separados.
+Impact: Com P pedidos de I itens, a listagem faz 1 + P + P·I queries; a latência cresce linearmente com o volume.
+Recommendation: Um JOIN `itens_pedido ⨝ produtos` com `IN (...)` agrupado em memória; reaproveitar o produto já buscado; agregação única com `SUM(CASE ...)` (Playbook P-13).
+
+### #13 [MEDIUM] Validação ausente / inconsistente (AP-14)
+File: controllers.py:169-170
+File: controllers.py:239-240
+File: controllers.py:43-50
+File: controllers.py:81-90
+File: controllers.py:118-121
+File: models.py:140-144
+Description: `login` e `atualizar_status_pedido` chamam `dados.get` sem checar `None` (corpo vazio → AttributeError → 500). `preco < 0` com string → TypeError → 500. `atualizar_produto` não valida o tamanho do nome nem a categoria, que `criar_produto` valida. `float(preco_min)` inválido → 500. Itens sem `produto_id`/`quantidade`, ou com quantidade ≤ 0, → KeyError ou pedido incoerente. O status é atualizado sem verificar se o pedido existe (retorna 200 para id inexistente).
+Impact: Erros do cliente viram 500 e podem entrar dados inválidos (quantidade negativa aumenta o estoque).
+Recommendation: Um validador único por recurso que levanta um erro de validação → 400 (Playbook P-14).
+
+### #14 [MEDIUM] Código duplicado (AP-15)
+File: models.py:12-21
+File: models.py:31-40
+File: models.py:304-313
+File: models.py:79-86
+File: models.py:95-102
+File: models.py:171-201
+File: models.py:203-233
+File: controllers.py:28-46
+Description: O mesmo bloco row→dict de produto aparece 3 vezes e o de usuário 2 vezes; `get_pedidos_usuario` e `get_todos_pedidos` são idênticos, exceto pelo WHERE; as validações de `criar_produto` são copiadas em `atualizar_produto` (controllers.py:72-90).
+Impact: Uma correção (ex.: remover `senha`) precisa ser feita em vários lugares e é fácil esquecer um deles.
+Recommendation: Um serializer por entidade e uma função de listagem de pedidos com filtro opcional (Playbook P-06, P-15).
+
+### #15 [MEDIUM] Tratamento de erro não centralizado (AP-16)
+File: controllers.py:10-12
+File: controllers.py:21-22
+File: controllers.py:60-62
+File: controllers.py:218-220
+File: controllers.py:291-292
+File: app.py:77-78
+(+11 ocorrências de `except Exception as e: return jsonify({"erro": str(e)}), 500` em controllers.py)
+Description: Cada handler tem seu próprio `try/except Exception` e devolve `str(e)` ao cliente; não existe `@app.errorhandler`.
+Impact: Mensagens internas (erros de SQL que revelam o schema) vazam para o cliente, e o formato do erro varia entre endpoints (`{"erro"}` vs `{"status","detalhes"}`).
+Recommendation: Exceções de domínio + error handler central que loga a exceção e devolve uma mensagem genérica (Playbook P-11).
+
+### #16 [MEDIUM] Efeitos colaterais acoplados à requisição (AP-18)
+File: controllers.py:208-210
+File: controllers.py:247-250
+Description: `print("ENVIANDO EMAIL ...")`, `"ENVIANDO SMS"` e `"ENVIANDO PUSH"` dentro do handler; `"cancelado. Devolver estoque."` é só um print, e o estoque nunca é devolvido no cancelamento.
+Impact: Notificações não podem ser trocadas nem testadas; cancelar um pedido perde estoque permanentemente (bug de negócio).
+Recommendation: Serviço de notificação injetado, chamado pelo controller após o commit; implementar a devolução de estoque no cancelamento (Playbook P-16).
+
+### #17 [LOW] Magic numbers / strings (AP-19)
+File: models.py:256-262
+File: controllers.py:52
+File: controllers.py:242
+File: controllers.py:47-50
+File: app.py:88
+File: controllers.py:285
+Description: Faixas de desconto `10000/0.1`, `5000/0.05`, `1000/0.02`; listas de categorias e status inline; tamanhos de nome `2`/`200`; porta `5000`; versão `"1.0.0"` repetida (app.py:35 e controllers.py:285).
+Impact: Mudar uma regra exige caçar literais espalhados pelo código.
+Recommendation: Constantes nomeadas no módulo de domínio ou na config (Playbook P-17).
+
+### #18 [LOW] Nomenclatura ruim (AP-20)
+File: models.py:187-191
+File: models.py:219-223
+File: controllers.py:14
+File: controllers.py:56
+File: models.py:24
+Description: `cursor2`/`cursor3`, `prod`; parâmetros e variáveis chamados `id`, que sombreiam o builtin (controllers.py:14, 56, 64, 98, 136, 160; models.py:24, 54, 65, 89).
+Impact: Atrapalha a leitura e cria risco de bugs sutis com o builtin sombreado.
+Recommendation: Nomes descritivos (`produto_id`, `usuario_id`), sem mudar o contrato público (Playbook P-18).
+
+### #19 [LOW] Imports não usados / código morto (AP-21)
+File: models.py:2
+File: database.py:2
+File: controllers.py:268
+Description: `import sqlite3` em models.py e `import os` em database.py nunca são usados; `cursor.execute("SELECT 1")` no health check tem o resultado descartado.
+Impact: Ruído e dependências enganosas.
+Recommendation: Remover (Playbook P-18).
+
+### #20 [LOW] print como log (AP-22)
+File: controllers.py:8
+File: controllers.py:11
+File: controllers.py:57
+File: controllers.py:106
+File: controllers.py:219
+File: app.py:56
+File: app.py:83-86
+(+8 ocorrências em controllers.py: 61, 161, 179, 182, 208-210, 248, 250)
+Description: 19 chamadas a `print(...)` para eventos e erros da aplicação.
+Impact: Sem níveis, sem timestamp, sem como redirecionar ou silenciar; PII vai para o stdout.
+Recommendation: Módulo `logging` com logger por módulo (Playbook P-19).
+
+### #21 [LOW] Lógica condicional verbosa (AP-23)
+File: controllers.py:200
+File: controllers.py:17-20
+File: controllers.py:247-250
+Description: `if not itens or len(itens) == 0` (a segunda condição é redundante); `if produto: return ... else: return ...` onde caberia uma guard clause; `if`s sequenciais sobre o mesmo `novo_status`.
+Impact: Leitura mais difícil; pouco impacto funcional.
+Recommendation: Guard clauses e simplificação (Playbook P-15/P-18).
+
+## Deprecated APIs
+none detected for Python 3.10 + Flask 3.1.1 + flask-cors 5.0.1 + sqlite3 (sem before_first_request, JSONEncoder, FLASK_ENV, utcnow, .query.get)
+
+## Notes
+- O diretório `reports/` não existe; o relatório não foi salvo em arquivo.
+- O registro de rotas com `add_url_rule` centralizado em app.py é um ponto positivo e será mantido como mapa de rotas.
+- O seed roda implicitamente no primeiro `get_db()`; na Fase 3 ele vira uma etapa explícita do bootstrap, com o mesmo comportamento (`python app.py` continua criando e populando o banco).
+
+================================
+Total: 21 findings
+================================
+
+Phase 2 complete. Proceed with refactoring (Phase 3)? [y/n]
+```
+exit=0

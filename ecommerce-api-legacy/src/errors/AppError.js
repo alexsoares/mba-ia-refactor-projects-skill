@@ -1,0 +1,10 @@
+// Erro de domínio: a mensagem é enviada ao cliente com o status informado.
+class AppError extends Error {
+    constructor(status, message) {
+        super(message);
+        this.name = 'AppError';
+        this.status = status;
+    }
+}
+
+module.exports = AppError;
